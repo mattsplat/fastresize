@@ -1,10 +1,11 @@
 // fastresize_capi.h - a plain C ABI wrapper around fastresize.h, so a
-// non-C++ language (here: Rust, via a hand-written extern "C" block - see
-// services/rust-vips/src/ffi.rs) can link against the same decode/resize/
-// composite/encode implementation the C++ candidates use, instead of
-// reimplementing it or pulling in a second image library. No new algorithm
-// lives in fastresize_capi.cpp - it's a thin opaque-handle shim over
-// fastresize::Image and friends.
+// non-C++ language can link against the same decode/resize/composite/
+// encode implementation instead of reimplementing it or pulling in a
+// second image library. No new algorithm lives in fastresize_capi.cpp -
+// it's a thin opaque-handle shim over fastresize::Image and friends.
+// Existing bindings on top of this: Rust (a hand-written extern "C" block),
+// Node (koffi), and PHP (ext-ffi - see
+// https://github.com/mattsplat/fastresize-php).
 #pragma once
 
 #include <stddef.h>
@@ -48,10 +49,11 @@ void fr_free_buffer(uint8_t* data);
 void fr_image_free(FRImage* img);
 
 // Thread-local: reflects the most recent failure on the CALLING thread only,
-// valid until that thread's next fr_* call. Safe here because every fr_*
-// call for one request stays on the single blocking thread that request
-// owns (see rust-vips/src/main.rs) - never call this from a thread other
-// than the one that made the failing call.
+// valid until that thread's next fr_* call - never call this from a thread
+// other than the one that made the failing call. If your caller processes
+// each unit of work (e.g. one request) on a single dedicated thread, this
+// just works; if it dispatches fr_* calls across a pool, read the error
+// immediately after the failing call, on that same thread.
 const char* fr_last_error(void);
 
 #ifdef __cplusplus

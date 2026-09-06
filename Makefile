@@ -26,8 +26,8 @@ endif
 
 CXX     ?= clang++
 # -O3 + arch-native: fastresize.h's stb resize kernels and the compositeOver
-# loop only vectorise past the SSE2 / baseline-NEON floor when the target ISA
-# is explicit (see services/common/pillow-simd-comparison.md, Feature 2).
+# loop only vectorise past the SSE2 / baseline-NEON floor when the target
+# ISA is explicit.
 ARCH    := $(shell uname -m)
 ifneq (,$(filter $(ARCH),x86_64 amd64))
   MARCH := -march=x86-64-v3

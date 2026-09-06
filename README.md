@@ -1,35 +1,69 @@
 # fastresize
 
 A small, single-purpose C++ image decode/resize/composite/encode library —
-no pipeline, no lazy evaluation graph, no operation-result caching, just the
-operations most compositing tasks need, implemented directly on top of
-`stb_image` + `stb_image_resize2` + `stb_image_write`.
+no pipeline, no lazy evaluation graph, no operation-result caching, just
+those four operations, implemented directly on top of `stb_image` +
+`stb_image_resize2` + `stb_image_write`.
 
 Extracted from [detail-image-bench](https://github.com/mattsplat/detail-image-bench),
 a multi-language benchmark where every libvips-backed candidate measured
-slower than this pipeline — the case against libvips (and what libvips is
-actually built for instead) is in `fastresize.h`'s own header comment. Now
-used from C++ directly (`cpp`, `qk3` in that project), and from Rust, Node,
-and PHP via the C ABI shim below.
+slower than this pipeline for a fetch-a-few-images/composite-once/encode-
+once workload. The case against libvips (and what libvips is actually built
+for instead) is in `fastresize.h`'s own header comment; real numbers against
+`vips` are in [BENCHMARKS.md](./BENCHMARKS.md). Used from C++ directly, and
+from Rust, Node, and PHP via the C ABI shim below.
 
-## `fastresize.h`
+## Supported image types
 
-Single-header decode / resize / composite / encode library, directly on
-`stb_image` + `stb_image_resize2` + `stb_image_write`. No pipeline, no lazy
-graph — just the operations this benchmark's compositing task needs.
-Rationale and the case against libvips are in the file's header comment; a
-point-by-point comparison with `uploadcare/pillow-simd` (and what's worth
-borrowing) is in [`pillow-simd-comparison.md`](./pillow-simd-comparison.md).
+**Input** (decode, probe): anything [stb_image](https://github.com/nothings/stb/blob/master/stb_image.h)
+supports — JPEG (baseline & progressive), PNG (1/2/4/8/16-bit-per-channel),
+BMP (non-1bpp, non-RLE), TGA, GIF (first frame only), PSD (composited view
+only), PIC, PNM (PPM/PGM, binary only), HDR. Always decoded to RGBA8,
+straight (non-premultiplied) alpha, regardless of the source's channel
+count or bit depth.
+
+**Output** (encode): **PNG only**, via `stb_image_write` or, optionally, the
+much faster [fpng](https://github.com/richgel999/fpng) (see `encodePng()`
+in `fastresize.h`). This is the one real functional gap against `vips`,
+which reads and writes many formats — fastresize is intentionally scoped to
+"decode whatever, always produce PNG."
+
+## `fastresize.h` — the library
 
 Every `Image` also carries `Rect opaque` — a **conservative superset** of
 where its non-transparent pixels are (it must contain them all, but may be
 larger, so "the whole image" is always legal). `decode()` computes it
 tightly via `opaqueBounds()`; `resize*()` map it forward; `crop()`
 intersects it. `compositeOver()` uses it to skip transparent margins
-entirely, which is worth **7.7×** on the golden payload's composite stage
-(187.6 → 24.3 ms) since these assets are 10–37% filled. Nothing may assume
-pixels *outside* the rect are transparent — it is only ever a licence to
-skip work.
+entirely, worth **7.7×** on a real composite workload (187.6 → 24.3 ms) once
+assets are 10–37% filled. Nothing may assume pixels *outside* the rect are
+transparent — it is only ever a licence to skip work.
+
+### Library usage (C++)
+
+```cpp
+// Include from exactly one translation unit per binary - this header
+// defines STB_IMAGE_IMPLEMENTATION and friends itself.
+#include "fastresize.h"
+
+int main() {
+  std::string bytes = /* read a file, fetch over HTTP, whatever */;
+
+  fastresize::Image bg = fastresize::decode(bytes);
+  fastresize::Image fg = fastresize::decode(otherBytes);
+  fg = fastresize::resizeNearest(fg, 200, 200);  // cheap kernel, no interpolation
+
+  fastresize::Image canvas(bg.width, bg.height);      // blank, transparent
+  fastresize::compositeOver(canvas, bg, 0, 0);
+  fastresize::compositeOver(canvas, fg, 40, 40);       // skips fg's transparent margin
+
+  std::string png = fastresize::encodePng(canvas);
+  // ... write png somewhere
+}
+```
+
+`decode`/`probeDimensions` also take a `std::string` overload if you'd
+rather not pass a raw pointer+length.
 
 ## `fastresize_capi.h` / `fastresize_capi.cpp` — the C ABI
 
@@ -38,13 +72,12 @@ composite/encode, so a non-C++ language can call the exact same
 implementation via FFI instead of reimplementing it. No new algorithm lives
 here. Used from:
 
-- **Rust**: compiled by a `build.rs` (the `cc` crate) and linked in directly
-  — see `rust-vips/build.rs` and `rust-vips/src/ffi.rs` in detail-image-bench.
+- **Rust**: compiled by a `build.rs` (the `cc` crate) and linked in directly.
 - **Node**: compiled to `libfastresize_capi.so` and called via
-  [`koffi`](https://koffi.dev) — see `node/src/fastresize.ts`.
+  [`koffi`](https://koffi.dev).
 - **PHP**: compiled to `libfastresize_capi.so` and called via `ext-ffi` — see
   [`fastresize-php`](https://github.com/mattsplat/fastresize-php), a Composer
-  package wrapping this exact shim.
+  package wrapping this exact shim, for a complete worked example.
 
 Build the shared library with `make capi` (below); link/load
 `libfastresize_capi.so` (or `.dylib` on macOS) from whichever language.
@@ -52,9 +85,8 @@ Build the shared library with `make capi` (below); link/load
 ## `fastresize` — the CLI
 
 `fastresize_cli.cpp` is a thin command-line front-end over `fastresize.h`,
-so the exact primitives the services use can be run and timed from a shell
-the same way `vips` is — for head-to-head measurement without an HTTP server
-in the loop.
+so its primitives can be run and timed from a shell the same way `vips`
+is — this is what [BENCHMARKS.md](./BENCHMARKS.md) is built on.
 
 ### Build
 
@@ -67,14 +99,15 @@ make clean
 
 `encodePng()` has two backends, picked at build time: `stb_image_write` by
 default (header-only, nothing to link) and **fpng** under
-`-DFASTRESIZE_FPNG` (needs `fpng.cpp` on the link line). On the golden
-payload's 8557×4000 canvas that is **817 ms → 68 ms**, pixel-identical
-output, ~8% larger file. `services/qk3` ships with it; `services/cpp` is
-deliberately left on stb as the control.
+`-DFASTRESIZE_FPNG` (needs `fpng.cpp` on the link line) — measured **12×**
+faster encode (817 ms → 68 ms on an 8557×4000 canvas), pixel-identical
+output, ~8% larger file. Worth it whenever encode time matters more than
+output size.
 
-`-O3` plus an arch-appropriate `-march`/`-mcpu` (see
-`pillow-simd-comparison.md`, Feature 2); no other dependencies. `./vendor`
-and `./fastresize` are gitignored.
+`-O3` plus an arch-appropriate `-march`/`-mcpu` — fastresize.h's stb resize
+kernels and the `compositeOver` loop only vectorise past the SSE2/baseline-
+NEON floor when the target ISA is explicit. No other dependencies.
+`./vendor` and the build outputs are gitignored.
 
 ### Usage
 
@@ -88,12 +121,13 @@ fastresize header    <in>
 
 Global options: `-v` / `--verbose` prints per-stage timings (decode, resize,
 encode, composite) to stderr; `--png-level <0-9>` sets stb's deflate effort
-(stb defaults to 8, `qk3` runs 1).
+(default 8 — dropping it to 1 measured ~28% faster encode for <0.1% larger
+output on diagram-style content).
 
-`--nearest` selects `resizeNearest` (`STBIR_FILTER_POINT_SAMPLE`, what the
-services actually use); the default is stb's SIMD linear filter. Output is
-always PNG — `fastresize.h` decodes anything stb supports but only *encodes*
-PNG, which is the one real difference from `vips`.
+`--nearest` selects `resizeNearest` (`STBIR_FILTER_POINT_SAMPLE`) instead of
+stb's SIMD linear filter — cheaper, no interpolation, a real quality
+tradeoff (see [BENCHMARKS.md](./BENCHMARKS.md) for how much it saves).
+Output is always PNG regardless of `<out>`'s extension.
 
 ### Examples
 

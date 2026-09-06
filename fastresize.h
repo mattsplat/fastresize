@@ -1,29 +1,24 @@
 // fastresize.h - a small, reusable, single-purpose image decode/resize/
 // composite/encode library. No general processing pipeline, no lazy
-// evaluation graph, no operation-result caching of its own - just the
-// operations this project's compositing task actually needs, implemented
-// directly on top of stb_image / stb_image_resize2 / stb_image_write.
+// evaluation graph, no operation-result caching of its own - just decode,
+// resize, composite, and encode, implemented directly on top of stb_image /
+// stb_image_resize2 / stb_image_write.
 //
 // Every Image also carries an `opaque` rect - a conservative bound on where
-// its non-transparent pixels are - because these assets are mostly
-// transparent margin, and compositeOver uses it to skip that margin. See
-// pillow-simd-comparison.md for where that idea and the integer compositing
-// loop came from, and what is deliberately left on the table.
+// its non-transparent pixels are, since many real workloads (icons/sprites/
+// diagrams on a transparent canvas) are mostly empty margin - and
+// compositeOver uses it to skip that margin entirely.
 //
-// Why this exists: every libvips-backed candidate in this benchmark (php,
-// node/sharp, cpp-vips, rust-vips) measured slower than every candidate
-// using a plain decode->resize->composite->encode pipeline (kotlin/Java2D,
-// go/x-image, this project's own stb-based `cpp` candidate) - see
-// RESULTS.md. The likely reason: libvips is built for a different problem
-// (large-scale/streaming pipelines with many chained operations) than this
-// one (a modest number of moderate images, composited once, output fully
-// materialized as a PNG regardless) - its lazy-graph machinery is overhead
-// here, not a win. github.com/tranhuucanh/fast_resize independently makes
-// the same architectural bet against libvips (SIMD stb_image_resize2, no
-// general pipeline) and claims 1.7-2.9x over it; this header extracts the
-// exact algorithm already proven correct (against the golden payload check)
-// in services/cpp/main.cpp into a form other C/C++ candidates can reuse
-// without copy-pasting it.
+// Why this exists: for a workload that decodes a modest number of images,
+// composites them once, and fully materializes a PNG output regardless,
+// a plain decode->resize->composite->encode pipeline measured faster than
+// every libvips-backed alternative tried against it (see the benchmarks in
+// README.md). The likely reason: libvips is built for a different problem
+// (large-scale/streaming pipelines with many chained operations) - its
+// lazy-graph machinery is overhead here, not a win.
+// github.com/tranhuucanh/fast_resize independently makes the same
+// architectural bet against libvips (SIMD stb_image_resize2, no general
+// pipeline) and claims 1.7-2.9x over it.
 //
 // Self-contained: this header defines STB_IMAGE_IMPLEMENTATION and friends
 // itself, so a consumer just includes it - no macro dance required. Include
@@ -59,19 +54,16 @@ struct Rect {
   bool empty() const { return w <= 0 || h <= 0; }
 };
 
-// Always RGBA8, straight (non-premultiplied) alpha - matches every other
-// candidate in this project.
+// Always RGBA8, straight (non-premultiplied) alpha.
 struct Image {
   int width = 0;
   int height = 0;
   std::vector<unsigned char> pixels;  // width * height * 4 bytes
 
   // Sub-rect that is guaranteed to contain every pixel with alpha != 0.
-  // These assets are overwhelmingly a small drawing on a large transparent
-  // canvas (measured on this project's own fixtures: the backgrounds are
-  // 100% filled, but the foregrounds and risers are only 10-37% - i.e. up
-  // to 90% of their pixels are transparent margin), so knowing where the
-  // drawing actually is lets compositeOver skip the margin entirely.
+  // Many real assets are a small drawing on a large transparent canvas -
+  // an icon, a sprite, a diagram - so knowing where the drawing actually is
+  // lets compositeOver skip the margin entirely.
   //
   // Invariant: CONSERVATIVE SUPERSET. It must contain every non-transparent
   // pixel, but is allowed to be larger - so "the whole image" is always a
@@ -213,11 +205,9 @@ inline Dimensions probeDimensions(const std::string& bytes) {
 }
 
 // Resizes to an exact target size - callers compute their own target
-// dimensions (same convention every candidate in this project already
-// follows: a global scale factor derived from the reference image, applied
-// to each image's own native size). Linear filtering, stb_image_resize2's
-// straightforward SIMD-accelerated default - see NearestNeighbor note in
-// resizeNearest below if a caller wants the cheaper kernel instead.
+// dimensions. Linear filtering, stb_image_resize2's straightforward
+// SIMD-accelerated default - see the NearestNeighbor note in resizeNearest
+// below if a caller wants the cheaper kernel instead.
 inline Image resize(const Image& src, int targetWidth, int targetHeight) {
   Image out(std::max(1, targetWidth), std::max(1, targetHeight));
   stbir_resize_uint8_linear(src.pixels.data(), src.width, src.height, 0, out.pixels.data(),
@@ -227,11 +217,11 @@ inline Image resize(const Image& src, int targetWidth, int targetHeight) {
 }
 
 // Same as resize(), but with nearest-neighbor sampling (STBIR_FILTER_POINT_
-// SAMPLE) - the cheapest possible kernel, no interpolation. Matches the
-// choice already made for the go and cpp candidates after measuring it
-// meaningfully faster with acceptable visual quality for this project's
-// assets. Uses the "medium" stbir_resize() API (not the uint8_linear/srgb
-// convenience wrappers) since only it exposes an explicit filter choice.
+// SAMPLE) - the cheapest possible kernel, no interpolation. Meaningfully
+// faster than resize() (see the benchmarks in README.md); worth it whenever
+// the visual quality tradeoff is acceptable for the assets involved. Uses
+// the "medium" stbir_resize() API (not the uint8_linear/srgb convenience
+// wrappers) since only it exposes an explicit filter choice.
 inline Image resizeNearest(const Image& src, int targetWidth, int targetHeight) {
   Image out(std::max(1, targetWidth), std::max(1, targetHeight));
   stbir_resize(src.pixels.data(), src.width, src.height, 0, out.pixels.data(), out.width,
@@ -275,21 +265,20 @@ inline Image crop(const Image& src, Rect r) {
 // Standard "over" alpha compositing onto `canvas` at (x, y), straight
 // (non-premultiplied) alpha. Out-of-bounds pixels are clipped.
 //
-// Integer arithmetic throughout - the same blend the old floating-point
-// version computed, `(s*a + d*(255-a)) / 255`, but without a per-pixel
-// double divide, and with the clip test hoisted out of the loop into an
-// overlap rectangle computed once. Borrowed from pillow-simd's
-// AlphaComposite.c (see pillow-simd-comparison.md), minus that file's
-// hand-written SSE4/AVX2 intrinsics, which would need a NEON twin here.
+// Integer arithmetic throughout - the standard "over" blend,
+// `(s*a + d*(255-a)) / 255`, but without a per-pixel floating-point divide,
+// and with the clip test hoisted out of the loop into an overlap rectangle
+// computed once.
 //
 // This loop does NOT auto-vectorise, and that was checked, not assumed:
 // clang -O3 -mcpu=native emits zero vector instructions for it. Removing
 // the branches below doesn't help, nor does swapping `/ 255` for the
 // shift-based div255 - clang won't vectorise the interleaved RGBA byte
 // access with a per-pixel alpha broadcast either way, and both variants
-// measured SLOWER than this one (28.1 ms shipped vs 32.4 and 34.4 on the
-// golden payload's 18 layers). Skipping transparent and opaque pixels beats
-// doing arithmetic on them. SIMD here needs real intrinsics or nothing.
+// measured slower than this one on a real composite workload (18 layers).
+// Skipping transparent and opaque pixels beats doing arithmetic on them.
+// Real SIMD here would need hand-written intrinsics (SSE4/AVX2 on x86, a
+// NEON equivalent on ARM), not auto-vectorization.
 //
 // Two shortcuts on top: the loop is bounded by src.opaque, so a drawing on
 // a large transparent canvas costs only its drawing, and fully transparent
@@ -336,9 +325,9 @@ inline void compositeOver(Image& canvas, const Image& src, int x, int y) {
 //
 // Two encoders, chosen at build time. stb_image_write is the default and
 // needs nothing but this header. Define FASTRESIZE_FPNG (and add fpng.cpp
-// to the link) to use fpng instead: measured on the golden payload's
-// 8557x4000 canvas, 817ms -> 68ms, a 12x cut on what is otherwise ~82% of
-// a request - and that was fpng's *scalar* fallback, since it has no NEON
+// to the link) to use fpng instead: measured on an 8557x4000 canvas,
+// 817ms -> 68ms, a 12x cut on what encoding otherwise dominates a request's
+// total time - and that was fpng's *scalar* fallback, since it has no NEON
 // path; on x86 with SSE4.1+PCLMUL it does better still. Output is
 // byte-for-byte a valid PNG and pixel-identical (verified: mean and max
 // absolute difference both 0.000 against the stb encoding), the cost being

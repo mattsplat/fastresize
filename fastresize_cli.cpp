@@ -1,6 +1,6 @@
-// fastresize - a small CLI over services/common/fastresize.h, so the exact
-// decode/resize/composite/encode primitives the `qk3` and `cpp` candidates
-// use can be run and timed from the command line the same way `vips` is:
+// fastresize - a small CLI over fastresize.h, so its decode/resize/
+// composite/encode primitives can be run and timed from the command line
+// the same way `vips` is:
 //
 //   fastresize resize     in.png out.png 0.5
 //   fastresize resize     in.png out.png --width 800
@@ -14,9 +14,9 @@
 // measurement against `vips`.
 //
 // Scope note: fastresize.h only *encodes* PNG (it decodes anything stb
-// supports), so output is always PNG regardless of the <out> extension.
-// That matches this benchmark's scope (PNG compositing only); it is the one
-// real difference from `vips`, which writes many formats.
+// supports - see README.md's "Supported formats"), so output is always PNG
+// regardless of the <out> extension; that is the one real difference from
+// `vips`, which writes many formats.
 
 #include "fastresize.h"
 
@@ -41,9 +41,10 @@ double msSince(Clock::time_point t0) {
 
 bool gVerbose = false;
 
-// stb_image_write's PNG deflate effort (0-9). stb's default is 8; qk3 sets
-// it to 1 at runtime (measured ~28% faster encode, <0.1% larger output on
-// diagram content). Left at the library default here; --png-level overrides.
+// stb_image_write's PNG deflate effort (0-9). stb's default is 8; dropping
+// it to 1 measured ~28% faster encode for <0.1% larger output on diagram-
+// style (large flat-region) content. Left at the library default here;
+// --png-level overrides.
 int gPngLevel = -1;
 
 void timed(const char* stage, double ms) {
@@ -82,8 +83,8 @@ void encodeFile(const fastresize::Image& img, const std::string& path) {
   if (gVerbose) std::fprintf(stderr, "  %-9s %8zu bytes -> %s\n", "output", png.size(), path.c_str());
 }
 
-// Applies the resize, honouring the same "skip when it's a no-op" shortcut
-// scaleImage() uses in qk3/cpp.
+// Applies the resize, skipping the call entirely when target == source size
+// (a real, common case: e.g. a global scale factor of 1.0).
 fastresize::Image doResize(const fastresize::Image& src, int w, int h, bool nearest) {
   if (w == src.width && h == src.height) return src;
   auto t0 = Clock::now();
@@ -120,13 +121,13 @@ std::string takeOpt(std::vector<std::string>& args, const std::string& name) {
 
 int usage() {
   std::fprintf(stderr,
-      "fastresize - CLI over services/common/fastresize.h\n\n"
+      "fastresize - CLI over fastresize.h\n\n"
       "  fastresize resize    <in> <out> <scale>        [--nearest] [-v]\n"
       "  fastresize resize    <in> <out> --width <px>   [--height <px>] [--nearest] [-v]\n"
       "  fastresize thumbnail <in> <out> <max-dim>      [--nearest] [-v]\n"
       "  fastresize composite <out> --size <W>x<H> <layer[@x,y]>...  [-v]\n"
       "  fastresize header    <in>\n\n"
-      "Global: -v/--verbose (stage timings), --png-level <0-9> (stb default 8; qk3 uses 1)\n"
+      "Global: -v/--verbose (stage timings), --png-level <0-9> (stb default 8)\n"
       "Output is always PNG (fastresize.h encodes PNG only).\n");
   return 2;
 }
