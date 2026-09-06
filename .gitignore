@@ -1,0 +1,4 @@
+vendor/
+fastresize
+libfastresize_capi.so
+libfastresize_capi.dylib
