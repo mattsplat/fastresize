@@ -44,7 +44,8 @@ bool gVerbose = false;
 // stb_image_write's PNG deflate effort (0-9). stb's default is 8; dropping
 // it to 1 measured ~28% faster encode for <0.1% larger output on diagram-
 // style (large flat-region) content. Left at the library default here;
-// --png-level overrides.
+// --png-level overrides. No effect in the default build - fpng ignores it;
+// build with FPNG=0 for --png-level to do anything.
 int gPngLevel = -1;
 
 // --flatten <r,g,b> switches encode from encodePng (4-channel RGBA) to
@@ -156,8 +157,9 @@ int usage() {
       "  fastresize crop      <in> <out> <x> <y> <w> <h>   [-v]\n"
       "  fastresize crop      <in> <out> --opaque          [-v]\n"
       "  fastresize header    <in>\n\n"
-      "Global: -v/--verbose (stage timings), --png-level <0-9> (stb default 8),\n"
-      "        --flatten <r,g,b> (flatten onto that background, encode 3-channel RGB)\n"
+      "Global: -v/--verbose (stage timings),\n"
+      "        --flatten <r,g,b> (flatten onto that background, encode 3-channel RGB),\n"
+      "        --png-level <0-9> (deflate effort; FPNG=0 builds only, fpng ignores it)\n"
       "Output is always PNG (fastresize.h encodes PNG only).\n");
   return 2;
 }

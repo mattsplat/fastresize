@@ -23,12 +23,13 @@ only), PIC, PNM (PPM/PGM, binary only), HDR. Always decoded to RGBA8,
 straight (non-premultiplied) alpha, regardless of the source's channel
 count or bit depth.
 
-**Output** (encode): **PNG only**, via `stb_image_write` or, optionally, the
-much faster [fpng](https://github.com/richgel999/fpng) (see `encodePng()`
-in `fastresize.h`). 4-channel RGBA by default; `encodePngRgb()` flattens
-onto a solid background and writes 3-channel RGB instead. This is the one
-real functional gap against `vips`, which reads and writes many formats —
-fastresize is intentionally scoped to "decode whatever, always produce PNG."
+**Output** (encode): **PNG only**, via [fpng](https://github.com/richgel999/fpng)
+by default (`make FPNG=0` falls back to `stb_image_write` — smaller file,
+~12× slower; see `encodePng()` in `fastresize.h`). 4-channel RGBA by
+default; `encodePngRgb()` flattens onto a solid background and writes
+3-channel RGB instead. This is the one real functional gap against `vips`,
+which reads and writes many formats — fastresize is intentionally scoped to
+"decode whatever, always produce PNG."
 
 ## `fastresize.h` — the library
 
@@ -101,10 +102,10 @@ is — this is what [BENCHMARKS.md](./BENCHMARKS.md) is built on.
 ### Build
 
 ```sh
-make            # curls the pinned stb headers into ./vendor, builds ./fastresize
-make FPNG=1     # ...and the fpng encoder (12x faster PNG encode, ~8% larger)
+make            # curls the pinned deps into ./vendor, builds ./fastresize
+make FPNG=0     # ...with stb_image_write instead of fpng (see below)
 make capi       # builds libfastresize_capi.so/.dylib (the C ABI, see above)
-make test       # builds + runs fastresize_test (dependency-free; FPNG=1 tests that path)
+make test       # builds + runs fastresize_test (dependency-free)
 make clean
 ```
 
@@ -113,12 +114,14 @@ synthetic in-memory fixtures, pixel checks that round-trip through the
 header's own `decode()`. No framework. CI runs it with both encoders on
 Linux and macOS.
 
-`encodePng()` has two backends, picked at build time: `stb_image_write` by
-default (header-only, nothing to link) and **fpng** under
-`-DFASTRESIZE_FPNG` (needs `fpng.cpp` on the link line) — measured **12×**
-faster encode (817 ms → 68 ms on an 8557×4000 canvas), pixel-identical
-output, ~8% larger file. Worth it whenever encode time matters more than
-output size.
+`encodePng()` has two backends, picked at build time. **fpng** is the
+default (`-DFASTRESIZE_FPNG`, `fpng.cpp` compiled as its own object) —
+measured **12×** faster encode (817 ms → 68 ms on an 8557×4000 canvas),
+pixel-identical output, ~8% larger file. Encode was the single largest cost
+in every workload this library was extracted from (see
+[PERFORMANCE.md](./PERFORMANCE.md)), so it is on unless you ask for
+`stb_image_write` with `make FPNG=0` (header-only, nothing extra to compile,
+smallest file).
 
 `-O3` plus an arch-appropriate `-march`/`-mcpu` — fastresize.h's stb resize
 kernels and the `compositeOver` loop only vectorise past the SSE2/baseline-
@@ -138,10 +141,11 @@ fastresize header    <in>
 ```
 
 Global options: `-v` / `--verbose` prints per-stage timings (decode, resize,
-encode, composite) to stderr; `--png-level <0-9>` sets stb's deflate effort
-(default 8 — dropping it to 1 measured ~28% faster encode for <0.1% larger
-output on diagram-style content); `--flatten <r,g,b>` composites the result
-onto that background and encodes a 3-channel RGB PNG instead of RGBA.
+encode, composite) to stderr; `--flatten <r,g,b>` composites the result onto
+that background and encodes a 3-channel RGB PNG instead of RGBA;
+`--png-level <0-9>` sets the deflate effort — only meaningful in an `FPNG=0`
+build (fpng has no such knob), where dropping stb's default 8 to 1 measured
+~28% faster encode for <0.1% larger output on diagram-style content.
 
 `--nearest` selects `resizeNearest` (`STBIR_FILTER_POINT_SAMPLE`) instead of
 stb's SIMD linear filter — cheaper, no interpolation, a real quality
