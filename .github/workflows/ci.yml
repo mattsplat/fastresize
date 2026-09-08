@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        fpng: ['0', '1']
+    runs-on: ${{ matrix.os }}
+    name: ${{ matrix.os }} / ${{ matrix.fpng == '1' && 'fpng' || 'stb' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run the test suite
+        run: make test FPNG=${{ matrix.fpng }}
+
+      - name: Build the CLI and the C ABI library
+        run: make FPNG=${{ matrix.fpng }} && make capi FPNG=${{ matrix.fpng }}

@@ -5,6 +5,7 @@
 #   make            # fetch stb headers + build ./fastresize
 #   make run ARGS='header some-image.png'
 #   make capi       # build libfastresize_capi.so/.dylib
+#   make test       # build + run fastresize_test (add FPNG=1 for the fpng path)
 #   make clean
 #
 # stb single-headers are vendored the same way the service Dockerfiles do it:
@@ -55,6 +56,9 @@ fastresize: fastresize_cli.cpp fastresize.h $(HEADERS)
 libfastresize_capi.$(SOEXT): fastresize_capi.cpp fastresize_capi.h fastresize.h $(HEADERS)
 	$(CXX) $(CXXFLAGS) $(FPNG_FLAGS) -fPIC -shared -I $(VENDOR) -o $@ fastresize_capi.cpp $(FPNG_SRC) $(LDFLAGS)
 
+fastresize_test: fastresize_test.cpp fastresize.h $(HEADERS)
+	$(CXX) $(CXXFLAGS) $(FPNG_FLAGS) -I $(VENDOR) -o $@ fastresize_test.cpp $(FPNG_SRC) $(LDFLAGS)
+
 $(VENDOR)/stb_%.h:
 	@mkdir -p $(VENDOR)
 	curl -sSL -o $@ $(STB_BASE)/stb_$*.h
@@ -63,12 +67,15 @@ $(VENDOR)/fpng.h $(VENDOR)/fpng.cpp:
 	@mkdir -p $(VENDOR)
 	curl -sSL -o $@ https://raw.githubusercontent.com/richgel999/fpng/$(FPNG_COMMIT)/src/$(@F)
 
-.PHONY: run capi clean
+.PHONY: run capi test clean
 run: fastresize
 	./fastresize $(ARGS)
 
 capi: libfastresize_capi.$(SOEXT)
 
+test: fastresize_test
+	./fastresize_test
+
 clean:
-	rm -f fastresize libfastresize_capi.so libfastresize_capi.dylib
+	rm -f fastresize fastresize_test libfastresize_capi.so libfastresize_capi.dylib
 	rm -rf $(VENDOR)
