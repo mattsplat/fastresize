@@ -18,6 +18,9 @@ VENDOR     := vendor
 HEADERS    := $(VENDOR)/stb_image.h $(VENDOR)/stb_image_write.h $(VENDOR)/stb_image_resize2.h
 FPNG_COMMIT := 925796543b9d26b8edfcdcecd94c1dac280f29fc
 
+# raw.githubusercontent.com resets connections often enough to flake CI - retry.
+CURL := curl -sSL --retry 3 --retry-delay 2 --retry-connrefused --retry-all-errors
+
 # PNG encoder, on by default. fpng is ~12x faster than stb_image_write (the
 # encode stage was the bottleneck in every candidate this library was
 # extracted from - see PERFORMANCE.md), for a ~8% larger file. FPNG=0 falls
@@ -78,11 +81,11 @@ $(VENDOR)/fpng.o: $(VENDOR)/fpng.cpp $(VENDOR)/fpng.h
 
 $(VENDOR)/stb_%.h:
 	@mkdir -p $(VENDOR)
-	curl -sSL -o $@ $(STB_BASE)/stb_$*.h
+	$(CURL) -o $@ $(STB_BASE)/stb_$*.h
 
 $(VENDOR)/fpng.h $(VENDOR)/fpng.cpp:
 	@mkdir -p $(VENDOR)
-	curl -sSL -o $@ https://raw.githubusercontent.com/richgel999/fpng/$(FPNG_COMMIT)/src/$(@F)
+	$(CURL) -o $@ https://raw.githubusercontent.com/richgel999/fpng/$(FPNG_COMMIT)/src/$(@F)
 
 .PHONY: run capi test clean
 run: fastresize
