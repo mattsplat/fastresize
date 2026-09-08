@@ -262,6 +262,24 @@ inline Image crop(const Image& src, Rect r) {
   return out;
 }
 
+// Fills every pixel of `img` with one straight-alpha RGBA colour, in place,
+// and updates `opaque` to match (empty if a == 0, the whole image
+// otherwise). Pair with Image(w, h) - which is transparent zeros - to get an
+// opaque starting canvas, so a later 3-channel encode has an honest
+// background to keep instead of junk under transparent pixels.
+inline void fill(Image& img, unsigned char r, unsigned char g, unsigned char b,
+                 unsigned char a) {
+  unsigned char* p = img.pixels.data();
+  const size_t n = static_cast<size_t>(img.width) * img.height;
+  for (size_t i = 0; i < n; ++i, p += 4) {
+    p[0] = r;
+    p[1] = g;
+    p[2] = b;
+    p[3] = a;
+  }
+  img.opaque = (a == 0) ? Rect{} : Rect{0, 0, img.width, img.height};
+}
+
 // Standard "over" alpha compositing onto `canvas` at (x, y), straight
 // (non-premultiplied) alpha. Out-of-bounds pixels are clipped.
 //
@@ -321,7 +339,8 @@ inline void compositeOver(Image& canvas, const Image& src, int x, int y) {
   }
 }
 
-// Encodes to PNG bytes.
+// Encodes an interleaved 8-bit buffer (RGBA if channels == 4, RGB if
+// channels == 3) to PNG bytes.
 //
 // Two encoders, chosen at build time. stb_image_write is the default and
 // needs nothing but this header. Define FASTRESIZE_FPNG (and add fpng.cpp
@@ -334,25 +353,28 @@ inline void compositeOver(Image& canvas, const Image& src, int x, int y) {
 // a ~8% larger file (2.33MB vs 2.16MB here) because fpng trades ratio for
 // speed. If response size matters more than latency, libspng+zlib-ng is
 // the other direction: ~2.4x faster than stb and ~45% smaller.
+namespace detail {
 #ifdef FASTRESIZE_FPNG
-inline std::string encodePng(const Image& img) {
+inline std::string encodePngBuffer(const unsigned char* pixels, int width, int height,
+                                   int channels) {
   static const bool initialized = [] {
     fpng::fpng_init();
     return true;
   }();
   (void)initialized;
   std::vector<unsigned char> out;
-  if (!fpng::fpng_encode_image_to_memory(img.pixels.data(), img.width, img.height, 4, out,
+  if (!fpng::fpng_encode_image_to_memory(pixels, width, height, channels, out,
                                          fpng::FPNG_ENCODE_SLOWER)) {
     throw std::runtime_error("fastresize: png encode failed (fpng)");
   }
   return std::string(reinterpret_cast<const char*>(out.data()), out.size());
 }
 #else
-inline std::string encodePng(const Image& img) {
+inline std::string encodePngBuffer(const unsigned char* pixels, int width, int height,
+                                   int channels) {
   int outLen = 0;
-  unsigned char* data =
-      stbi_write_png_to_mem(img.pixels.data(), img.width * 4, img.width, img.height, 4, &outLen);
+  unsigned char* data = stbi_write_png_to_mem(pixels, width * channels, width, height, channels,
+                                              &outLen);
   if (!data) {
     throw std::runtime_error("fastresize: png encode failed");
   }
@@ -361,5 +383,51 @@ inline std::string encodePng(const Image& img) {
   return result;
 }
 #endif
+}  // namespace detail
+
+// Encodes the image as a 4-channel (RGBA) PNG.
+inline std::string encodePng(const Image& img) {
+  return detail::encodePngBuffer(img.pixels.data(), img.width, img.height, 4);
+}
+
+// Flattens every pixel onto a solid (r, g, b) background using straight-alpha
+// "over", producing a width * height * 3 interleaved RGB buffer. Transparent
+// pixels have undefined RGB, so dropping alpha without compositing first
+// would be meaningless - this is the point of the call.
+inline std::vector<unsigned char> flattenRgb(const Image& img, unsigned char r, unsigned char g,
+                                             unsigned char b) {
+  std::vector<unsigned char> out(static_cast<size_t>(img.width) * img.height * 3);
+  const unsigned char* sp = img.pixels.data();
+  unsigned char* dp = out.data();
+  const size_t n = static_cast<size_t>(img.width) * img.height;
+  for (size_t i = 0; i < n; ++i, sp += 4, dp += 3) {
+    const unsigned a = sp[3];
+    if (a == 255) {
+      dp[0] = sp[0];
+      dp[1] = sp[1];
+      dp[2] = sp[2];
+    } else if (a == 0) {
+      dp[0] = r;
+      dp[1] = g;
+      dp[2] = b;
+    } else {
+      const unsigned na = 255u - a;
+      dp[0] = static_cast<unsigned char>((sp[0] * a + r * na) / 255u);
+      dp[1] = static_cast<unsigned char>((sp[1] * a + g * na) / 255u);
+      dp[2] = static_cast<unsigned char>((sp[2] * a + b * na) / 255u);
+    }
+  }
+  return out;
+}
+
+// Flattens onto a solid (r, g, b) background and encodes a 3-channel (RGB)
+// PNG - no alpha channel in the output. Lets a consumer whose downstream
+// decoder has a slower RGBA path (e.g. a PDF image XObject) skip it without
+// doing the flatten itself in a slower language.
+inline std::string encodePngRgb(const Image& img, unsigned char r, unsigned char g,
+                                unsigned char b) {
+  std::vector<unsigned char> rgb = flattenRgb(img, r, g, b);
+  return detail::encodePngBuffer(rgb.data(), img.width, img.height, 3);
+}
 
 }  // namespace fastresize
