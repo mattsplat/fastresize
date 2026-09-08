@@ -24,9 +24,10 @@ count or bit depth.
 
 **Output** (encode): **PNG only**, via `stb_image_write` or, optionally, the
 much faster [fpng](https://github.com/richgel999/fpng) (see `encodePng()`
-in `fastresize.h`). This is the one real functional gap against `vips`,
-which reads and writes many formats — fastresize is intentionally scoped to
-"decode whatever, always produce PNG."
+in `fastresize.h`). 4-channel RGBA by default; `encodePngRgb()` flattens
+onto a solid background and writes 3-channel RGB instead. This is the one
+real functional gap against `vips`, which reads and writes many formats —
+fastresize is intentionally scoped to "decode whatever, always produce PNG."
 
 ## `fastresize.h` — the library
 
@@ -53,24 +54,32 @@ int main() {
   fastresize::Image fg = fastresize::decode(otherBytes);
   fg = fastresize::resizeNearest(fg, 200, 200);  // cheap kernel, no interpolation
 
-  fastresize::Image canvas(bg.width, bg.height);      // blank, transparent
+  fastresize::Image canvas(bg.width, bg.height);       // blank, transparent
+  fastresize::fill(canvas, 255, 255, 255, 255);        // ...or start opaque white
   fastresize::compositeOver(canvas, bg, 0, 0);
   fastresize::compositeOver(canvas, fg, 40, 40);       // skips fg's transparent margin
 
-  std::string png = fastresize::encodePng(canvas);
+  std::string png = fastresize::encodePng(canvas);           // 4-channel RGBA
+  std::string rgb = fastresize::encodePngRgb(canvas, 255, 255, 255);  // 3-channel RGB
   // ... write png somewhere
 }
 ```
+
+`crop(img, img.opaque)` trims a mostly-transparent asset down to its drawing
+before you resize or cache it; the caller then adds `(opaque.x, opaque.y)`
+back when compositing. `fr_opaque_rect()` exposes the same rect over the C
+ABI.
 
 `decode`/`probeDimensions` also take a `std::string` overload if you'd
 rather not pass a raw pointer+length.
 
 ## `fastresize_capi.h` / `fastresize_capi.cpp` — the C ABI
 
-A thin opaque-handle shim over `fastresize.h`'s decode/probe/resize/
-composite/encode, so a non-C++ language can call the exact same
-implementation via FFI instead of reimplementing it. No new algorithm lives
-here. Used from:
+A thin opaque-handle shim over `fastresize.h`'s decode/probe/resize/crop/
+fill/composite/encode (`fr_new_canvas_rgba`, `fr_fill`, `fr_opaque_rect`,
+`fr_crop`, `fr_encode_png_rgb` alongside the originals), so a non-C++
+language can call the exact same implementation via FFI instead of
+reimplementing it. No new algorithm lives here. Used from:
 
 - **Rust**: compiled by a `build.rs` (the `cc` crate) and linked in directly.
 - **Node**: compiled to `libfastresize_capi.so` and called via
@@ -115,14 +124,17 @@ NEON floor when the target ISA is explicit. No other dependencies.
 fastresize resize    <in> <out> <scale>              [--nearest] [-v]
 fastresize resize    <in> <out> --width <px> [--height <px>] [--nearest] [-v]
 fastresize thumbnail <in> <out> <max-dim>            [--nearest] [-v]
-fastresize composite <out> --size <W>x<H> <layer[@x,y]>...   [-v]
+fastresize composite <out> --size <W>x<H> [--background <r,g,b>] <layer[@x,y]>...   [-v]
+fastresize crop      <in> <out> <x> <y> <w> <h>      [-v]
+fastresize crop      <in> <out> --opaque             [-v]
 fastresize header    <in>
 ```
 
 Global options: `-v` / `--verbose` prints per-stage timings (decode, resize,
 encode, composite) to stderr; `--png-level <0-9>` sets stb's deflate effort
 (default 8 — dropping it to 1 measured ~28% faster encode for <0.1% larger
-output on diagram-style content).
+output on diagram-style content); `--flatten <r,g,b>` composites the result
+onto that background and encodes a 3-channel RGB PNG instead of RGBA.
 
 `--nearest` selects `resizeNearest` (`STBIR_FILTER_POINT_SAMPLE`) instead of
 stb's SIMD linear filter — cheaper, no interpolation, a real quality
