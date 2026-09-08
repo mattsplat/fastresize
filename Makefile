@@ -5,6 +5,7 @@
 #   make            # fetch stb headers + build ./fastresize
 #   make run ARGS='header some-image.png'
 #   make capi       # build libfastresize_capi.so/.dylib
+#   make test       # build + run fastresize_test (add FPNG=1 for the fpng path)
 #   make clean
 #
 # stb single-headers are vendored the same way the service Dockerfiles do it:
@@ -15,14 +16,6 @@ STB_BASE   := https://raw.githubusercontent.com/nothings/stb/$(STB_COMMIT)
 VENDOR     := vendor
 HEADERS    := $(VENDOR)/stb_image.h $(VENDOR)/stb_image_write.h $(VENDOR)/stb_image_resize2.h
 FPNG_COMMIT := 925796543b9d26b8edfcdcecd94c1dac280f29fc
-
-# FPNG=1 builds with fastresize.h's fpng encoder instead of stb_image_write
-# (12x faster encode, ~8% larger PNG - see encodePng() in fastresize.h).
-ifeq ($(FPNG),1)
-  HEADERS  += $(VENDOR)/fpng.h $(VENDOR)/fpng.cpp
-  FPNG_FLAGS := -DFASTRESIZE_FPNG
-  FPNG_SRC   := $(VENDOR)/fpng.cpp
-endif
 
 CXX     ?= clang++
 # -O3 + arch-native: fastresize.h's stb resize kernels and the compositeOver
@@ -41,6 +34,23 @@ endif
 CXXFLAGS ?= -O3 $(MARCH) -std=c++17
 LDFLAGS  ?=
 
+# FPNG=1 builds with fastresize.h's fpng encoder instead of stb_image_write
+# (12x faster encode, ~8% larger PNG - see encodePng() in fastresize.h).
+# fpng.cpp is compiled as its own object with its own flags: -march=x86-64-v3
+# does NOT imply PCLMUL, which fpng's SSE CRC path needs (gcc hard-errors on
+# the intrinsic without -mpclmul), and it has no NEON path so SSE is disabled
+# on arm. -fno-strict-aliasing is fpng's documented build requirement.
+ifeq ($(FPNG),1)
+  HEADERS    += $(VENDOR)/fpng.h
+  FPNG_FLAGS := -DFASTRESIZE_FPNG
+  FPNG_OBJ   := $(VENDOR)/fpng.o
+  ifneq (,$(filter $(ARCH),x86_64 amd64))
+    FPNG_ARCH := -msse4.1 -mpclmul
+  else
+    FPNG_ARCH := -DFPNG_NO_SSE=1
+  endif
+endif
+
 # .dylib on macOS, .so everywhere else - both loadable by koffi/ext-ffi/etc.
 UNAME_S := $(shell uname -s)
 ifeq ($(UNAME_S),Darwin)
@@ -49,11 +59,17 @@ else
   SOEXT := so
 endif
 
-fastresize: fastresize_cli.cpp fastresize.h $(HEADERS)
-	$(CXX) $(CXXFLAGS) $(FPNG_FLAGS) -I $(VENDOR) -o $@ fastresize_cli.cpp $(FPNG_SRC) $(LDFLAGS)
+fastresize: fastresize_cli.cpp fastresize.h $(HEADERS) $(FPNG_OBJ)
+	$(CXX) $(CXXFLAGS) $(FPNG_FLAGS) -I $(VENDOR) -o $@ fastresize_cli.cpp $(FPNG_OBJ) $(LDFLAGS)
 
-libfastresize_capi.$(SOEXT): fastresize_capi.cpp fastresize_capi.h fastresize.h $(HEADERS)
-	$(CXX) $(CXXFLAGS) $(FPNG_FLAGS) -fPIC -shared -I $(VENDOR) -o $@ fastresize_capi.cpp $(FPNG_SRC) $(LDFLAGS)
+libfastresize_capi.$(SOEXT): fastresize_capi.cpp fastresize_capi.h fastresize.h $(HEADERS) $(FPNG_OBJ)
+	$(CXX) $(CXXFLAGS) $(FPNG_FLAGS) -fPIC -shared -I $(VENDOR) -o $@ fastresize_capi.cpp $(FPNG_OBJ) $(LDFLAGS)
+
+fastresize_test: fastresize_test.cpp fastresize.h $(HEADERS) $(FPNG_OBJ)
+	$(CXX) $(CXXFLAGS) $(FPNG_FLAGS) -I $(VENDOR) -o $@ fastresize_test.cpp $(FPNG_OBJ) $(LDFLAGS)
+
+$(VENDOR)/fpng.o: $(VENDOR)/fpng.cpp $(VENDOR)/fpng.h
+	$(CXX) $(CXXFLAGS) $(FPNG_ARCH) -fno-strict-aliasing -fPIC -I $(VENDOR) -c -o $@ $(VENDOR)/fpng.cpp
 
 $(VENDOR)/stb_%.h:
 	@mkdir -p $(VENDOR)
@@ -63,12 +79,15 @@ $(VENDOR)/fpng.h $(VENDOR)/fpng.cpp:
 	@mkdir -p $(VENDOR)
 	curl -sSL -o $@ https://raw.githubusercontent.com/richgel999/fpng/$(FPNG_COMMIT)/src/$(@F)
 
-.PHONY: run capi clean
+.PHONY: run capi test clean
 run: fastresize
 	./fastresize $(ARGS)
 
 capi: libfastresize_capi.$(SOEXT)
 
+test: fastresize_test
+	./fastresize_test
+
 clean:
-	rm -f fastresize libfastresize_capi.so libfastresize_capi.dylib
+	rm -f fastresize fastresize_test libfastresize_capi.so libfastresize_capi.dylib
 	rm -rf $(VENDOR)

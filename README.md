@@ -8,10 +8,11 @@ those four operations, implemented directly on top of `stb_image` +
 Extracted from [detail-image-bench](https://github.com/mattsplat/detail-image-bench),
 a multi-language benchmark where every libvips-backed candidate measured
 slower than this pipeline for a fetch-a-few-images/composite-once/encode-
-once workload. The case against libvips (and what libvips is actually built
-for instead) is in `fastresize.h`'s own header comment; real numbers against
-`vips` are in [BENCHMARKS.md](./BENCHMARKS.md). Used from C++ directly, and
-from Rust, Node, and PHP via the C ABI shim below.
+once workload. [PERFORMANCE.md](./PERFORMANCE.md) explains the architectural
+bet against libvips and the concrete techniques it enables;
+[BENCHMARKS.md](./BENCHMARKS.md) has real numbers against `vips` (including
+the one operation where vips still wins). Used from C++ directly, and from
+Rust, Node, and PHP via the C ABI shim below.
 
 ## Supported image types
 
@@ -103,8 +104,14 @@ is — this is what [BENCHMARKS.md](./BENCHMARKS.md) is built on.
 make            # curls the pinned stb headers into ./vendor, builds ./fastresize
 make FPNG=1     # ...and the fpng encoder (12x faster PNG encode, ~8% larger)
 make capi       # builds libfastresize_capi.so/.dylib (the C ABI, see above)
+make test       # builds + runs fastresize_test (dependency-free; FPNG=1 tests that path)
 make clean
 ```
+
+`fastresize_test.cpp` is the whole test suite — one translation unit,
+synthetic in-memory fixtures, pixel checks that round-trip through the
+header's own `decode()`. No framework. CI runs it with both encoders on
+Linux and macOS.
 
 `encodePng()` has two backends, picked at build time: `stb_image_write` by
 default (header-only, nothing to link) and **fpng** under
