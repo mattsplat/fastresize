@@ -342,12 +342,13 @@ inline void compositeOver(Image& canvas, const Image& src, int x, int y) {
 // Encodes an interleaved 8-bit buffer (RGBA if channels == 4, RGB if
 // channels == 3) to PNG bytes.
 //
-// Two encoders, chosen at build time. stb_image_write is the default and
-// needs nothing but this header. Define FASTRESIZE_FPNG (and add fpng.cpp
-// to the link) to use fpng instead: measured on an 8557x4000 canvas,
-// 817ms -> 68ms, a 12x cut on what encoding otherwise dominates a request's
-// total time - and that was fpng's *scalar* fallback, since it has no NEON
-// path; on x86 with SSE4.1+PCLMUL it does better still. Output is
+// Two encoders, chosen at build time. Without FASTRESIZE_FPNG the header is
+// self-contained and uses stb_image_write. Define FASTRESIZE_FPNG (and add
+// fpng.cpp to the link) to use fpng instead - which is what this repo's
+// Makefile does by default (FPNG=0 opts back out): measured on an 8557x4000
+// canvas, 817ms -> 68ms, a 12x cut on what encoding otherwise dominates a
+// request's total time - and that was fpng's *scalar* fallback, since it has
+// no NEON path; on x86 with SSE4.1+PCLMUL it does better still. Output is
 // byte-for-byte a valid PNG and pixel-identical (verified: mean and max
 // absolute difference both 0.000 against the stb encoding), the cost being
 // a ~8% larger file (2.33MB vs 2.16MB here) because fpng trades ratio for

@@ -2,10 +2,11 @@
 # via `make capi`, the C ABI shared library (fastresize_capi.h/.cpp) that
 # lets non-C++ languages call the same implementation over FFI.
 #
-#   make            # fetch stb headers + build ./fastresize
+#   make            # fetch deps + build ./fastresize (fpng encoder)
 #   make run ARGS='header some-image.png'
 #   make capi       # build libfastresize_capi.so/.dylib
-#   make test       # build + run fastresize_test (add FPNG=1 for the fpng path)
+#   make test       # build + run fastresize_test
+#   make FPNG=0 ...  # use stb_image_write instead of fpng (smaller PNG, ~12x slower encode)
 #   make clean
 #
 # stb single-headers are vendored the same way the service Dockerfiles do it:
@@ -16,6 +17,15 @@ STB_BASE   := https://raw.githubusercontent.com/nothings/stb/$(STB_COMMIT)
 VENDOR     := vendor
 HEADERS    := $(VENDOR)/stb_image.h $(VENDOR)/stb_image_write.h $(VENDOR)/stb_image_resize2.h
 FPNG_COMMIT := 925796543b9d26b8edfcdcecd94c1dac280f29fc
+
+# raw.githubusercontent.com resets connections often enough to flake CI - retry.
+CURL := curl -sSL --retry 3 --retry-delay 2 --retry-connrefused --retry-all-errors
+
+# PNG encoder, on by default. fpng is ~12x faster than stb_image_write (the
+# encode stage was the bottleneck in every candidate this library was
+# extracted from - see PERFORMANCE.md), for a ~8% larger file. FPNG=0 falls
+# back to stb (header-only, nothing extra to compile or vendor).
+FPNG ?= 1
 
 CXX     ?= clang++
 # -O3 + arch-native: fastresize.h's stb resize kernels and the compositeOver
@@ -34,13 +44,11 @@ endif
 CXXFLAGS ?= -O3 $(MARCH) -std=c++17
 LDFLAGS  ?=
 
-# FPNG=1 builds with fastresize.h's fpng encoder instead of stb_image_write
-# (12x faster encode, ~8% larger PNG - see encodePng() in fastresize.h).
 # fpng.cpp is compiled as its own object with its own flags: -march=x86-64-v3
 # does NOT imply PCLMUL, which fpng's SSE CRC path needs (gcc hard-errors on
 # the intrinsic without -mpclmul), and it has no NEON path so SSE is disabled
 # on arm. -fno-strict-aliasing is fpng's documented build requirement.
-ifeq ($(FPNG),1)
+ifneq ($(FPNG),0)
   HEADERS    += $(VENDOR)/fpng.h
   FPNG_FLAGS := -DFASTRESIZE_FPNG
   FPNG_OBJ   := $(VENDOR)/fpng.o
@@ -73,11 +81,11 @@ $(VENDOR)/fpng.o: $(VENDOR)/fpng.cpp $(VENDOR)/fpng.h
 
 $(VENDOR)/stb_%.h:
 	@mkdir -p $(VENDOR)
-	curl -sSL -o $@ $(STB_BASE)/stb_$*.h
+	$(CURL) -o $@ $(STB_BASE)/stb_$*.h
 
 $(VENDOR)/fpng.h $(VENDOR)/fpng.cpp:
 	@mkdir -p $(VENDOR)
-	curl -sSL -o $@ https://raw.githubusercontent.com/richgel999/fpng/$(FPNG_COMMIT)/src/$(@F)
+	$(CURL) -o $@ https://raw.githubusercontent.com/richgel999/fpng/$(FPNG_COMMIT)/src/$(@F)
 
 .PHONY: run capi test clean
 run: fastresize
